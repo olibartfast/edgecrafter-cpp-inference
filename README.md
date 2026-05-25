@@ -45,7 +45,7 @@ The exported graph must expose the EdgeCrafter deploy contract:
 - inputs: `images` (`NCHW` float tensor) and `orig_target_sizes` (`[N,2]`, width/height)
 - detection outputs: `labels`, `boxes`, `scores`
 - segmentation outputs: `labels`, `boxes`, `scores`, `masks`
-- pose estimation outputs: `labels`, `boxes`, `scores`, `keypoints` (shape `[1, N, 17, 3]` — x, y, confidence per keypoint)
+- pose estimation outputs: `labels`, `scores`, `keypoints` (shape `[1, N, 17, 2]` or `[1, N, 17, 3]` — x, y, and optional confidence per keypoint)
 
 ## Build C++
 

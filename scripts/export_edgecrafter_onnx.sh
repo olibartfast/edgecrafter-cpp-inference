@@ -32,7 +32,7 @@ case "${model}" in
     ;;
   ecpose_s|ecpose_m)
     task_dir="ecpose"
-    config="configs/ecpose/${model}.yml"
+    config="configs/ecpose/${model}_coco.yml"
     ;;
   -h|--help)
     usage

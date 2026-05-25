@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <string_view>
@@ -78,22 +79,38 @@ std::vector<Result> EdgeCrafterInference::infer(std::span<const float> input_dat
     backend_->run_inference(input_data, input_shape_, orig_target_size);
 
     const size_t labels_idx = output_index_or_throw("labels");
-    const size_t boxes_idx = output_index_or_throw("boxes");
     const size_t scores_idx = output_index_or_throw("scores");
 
     const auto labels_shape = backend_->get_output_shape(labels_idx);
-    const auto boxes_shape = backend_->get_output_shape(boxes_idx);
     const auto scores_shape = backend_->get_output_shape(scores_idx);
-    if (labels_shape.size() != 2 || boxes_shape.size() != 3 || boxes_shape[2] != 4 || scores_shape != labels_shape) {
+    if (labels_shape.size() != 2 || scores_shape != labels_shape) {
         throw std::runtime_error("Unexpected EdgeCrafter output shapes");
     }
 
     std::vector<int64_t> labels(tensor_size(labels_shape));
-    std::vector<float> boxes(tensor_size(boxes_shape));
     std::vector<float> scores(tensor_size(scores_shape));
     backend_->get_int64_output_data(labels_idx, labels.data(), labels.size());
-    backend_->get_float_output_data(boxes_idx, boxes.data(), boxes.size());
     backend_->get_float_output_data(scores_idx, scores.data(), scores.size());
+
+    std::vector<float> boxes;
+    std::vector<int64_t> boxes_shape;
+    bool has_boxes = false;
+    size_t boxes_idx = 0;
+    for (size_t i = 0; i < backend_->get_output_count(); ++i) {
+        if (backend_->get_output_name(i) == "boxes") {
+            boxes_idx = i;
+            has_boxes = true;
+            break;
+        }
+    }
+    if (has_boxes) {
+        boxes_shape = backend_->get_output_shape(boxes_idx);
+        if (boxes_shape.size() != 3 || boxes_shape[2] != 4 || boxes_shape[1] != labels_shape[1]) {
+            throw std::runtime_error("Unexpected EdgeCrafter boxes output shape");
+        }
+        boxes.resize(tensor_size(boxes_shape));
+        backend_->get_float_output_data(boxes_idx, boxes.data(), boxes.size());
+    }
 
     std::vector<float> masks;
     std::vector<int64_t> masks_shape;
@@ -115,7 +132,8 @@ std::vector<Result> EdgeCrafterInference::infer(std::span<const float> input_dat
     if (config_.task_type == TaskType::POSE) {
         const size_t keypoints_idx = output_index_or_throw("keypoints");
         keypoints_shape = backend_->get_output_shape(keypoints_idx);
-        if (keypoints_shape.size() != 4 || keypoints_shape[1] != labels_shape[1] || keypoints_shape[3] != 3) {
+        const auto kpt_dim = keypoints_shape.size() == 4 ? keypoints_shape[3] : 0;
+        if (keypoints_shape.size() != 4 || keypoints_shape[1] != labels_shape[1] || (kpt_dim != 2 && kpt_dim != 3)) {
             throw std::runtime_error("Unexpected EdgeCrafter keypoints output shape");
         }
         keypoints.resize(tensor_size(keypoints_shape));
@@ -126,6 +144,8 @@ std::vector<Result> EdgeCrafterInference::infer(std::span<const float> input_dat
     std::vector<Result> results;
     const auto count = static_cast<size_t>(labels_shape[1]);
     results.reserve(count);
+    const auto num_kpts = has_keypoints ? static_cast<size_t>(keypoints_shape[2]) : 0;
+    const auto kpt_dim = has_keypoints ? static_cast<int64_t>(keypoints_shape[3]) : int64_t{0};
     for (size_t i = 0; i < count; ++i) {
         const float score = scores[i];
         if (score <= config_.threshold) {
@@ -135,8 +155,41 @@ std::vector<Result> EdgeCrafterInference::infer(std::span<const float> input_dat
         Result result;
         result.class_id = static_cast<int>(labels[i]);
         result.score = score;
-        const size_t box_offset = i * 4;
-        result.box = {boxes[box_offset], boxes[box_offset + 1], boxes[box_offset + 2], boxes[box_offset + 3]};
+
+        if (has_boxes) {
+            const size_t box_offset = i * 4;
+            result.box = {boxes[box_offset], boxes[box_offset + 1], boxes[box_offset + 2], boxes[box_offset + 3]};
+        }
+
+        if (has_keypoints) {
+            result.keypoints.resize(num_kpts);
+            const size_t kpt_offset = i * num_kpts * static_cast<size_t>(kpt_dim);
+            for (size_t k = 0; k < num_kpts; ++k) {
+                const size_t off = kpt_offset + k * static_cast<size_t>(kpt_dim);
+                const float conf = kpt_dim == 3 ? keypoints[off + 2] : 1.0F;
+                result.keypoints[k] = {keypoints[off], keypoints[off + 1], conf};
+            }
+
+            if (!has_boxes) {
+                float x_min = std::numeric_limits<float>::max();
+                float y_min = std::numeric_limits<float>::max();
+                float x_max = 0.0F;
+                float y_max = 0.0F;
+                bool any = false;
+                for (const auto &kp : result.keypoints) {
+                    if (kp[2] > config_.keypoint_threshold) {
+                        x_min = std::min(x_min, kp[0]);
+                        y_min = std::min(y_min, kp[1]);
+                        x_max = std::max(x_max, kp[0]);
+                        y_max = std::max(y_max, kp[1]);
+                        any = true;
+                    }
+                }
+                if (any) {
+                    result.box = {x_min, y_min, x_max, y_max};
+                }
+            }
+        }
 
         if (has_masks) {
             const auto mask_h = static_cast<int>(masks_shape[2]);
@@ -146,16 +199,6 @@ std::vector<Result> EdgeCrafterInference::infer(std::span<const float> input_dat
             cv::Mat mask_resized;
             cv::resize(mask_small, mask_resized, cv::Size(orig_w, orig_h), 0, 0, cv::INTER_LINEAR);
             result.mask = mask_resized > config_.mask_threshold;
-        }
-
-        if (has_keypoints) {
-            const auto num_kpts = static_cast<size_t>(keypoints_shape[2]);
-            result.keypoints.resize(num_kpts);
-            const size_t kpt_offset = i * num_kpts * 3;
-            for (size_t k = 0; k < num_kpts; ++k) {
-                const size_t off = kpt_offset + k * 3;
-                result.keypoints[k] = {keypoints[off], keypoints[off + 1], keypoints[off + 2]};
-            }
         }
 
         results.push_back(std::move(result));
