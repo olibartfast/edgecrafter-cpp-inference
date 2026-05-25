@@ -239,12 +239,12 @@ void EdgeCrafterInference::draw_results(cv::Mat &image, std::span<const Result> 
 
         const std::string text = label_for(result.class_id) + " " + std::to_string(result.score).substr(0, 4);
         int baseline = 0;
-        const cv::Size text_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.55, 1, &baseline);
+        const cv::Size text_size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.75, 2, &baseline);
         cv::Point text_org(static_cast<int>(std::max(0.0F, p1.x)), static_cast<int>(std::max(18.0F, p1.y - 4.0F)));
         cv::rectangle(image, cv::Point(text_org.x, text_org.y - text_size.height - baseline - 4),
-                      cv::Point(text_org.x + text_size.width + 4, text_org.y + 2), color, cv::FILLED);
-        cv::putText(image, text, cv::Point(text_org.x + 2, text_org.y - baseline - 1), cv::FONT_HERSHEY_SIMPLEX, 0.55,
-                    cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+                      cv::Point(text_org.x + text_size.width + 5, text_org.y + 3), color, cv::FILLED);
+        cv::putText(image, text, cv::Point(text_org.x + 3, text_org.y - baseline - 2), cv::FONT_HERSHEY_SIMPLEX, 0.75,
+                    cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
 
         if (config_.task_type == TaskType::POSE && !result.keypoints.empty()) {
             edgecrafter::processing::draw_keypoints(
