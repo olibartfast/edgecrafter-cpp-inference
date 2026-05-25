@@ -224,15 +224,22 @@ std::string EdgeCrafterInference::label_for(int class_id) const {
 }
 
 void EdgeCrafterInference::draw_results(cv::Mat &image, std::span<const Result> results) {
-    cv::Mat overlay = image.clone();
     constexpr double alpha = 0.45;
+    cv::Mat overlay;
+
+    if (config_.task_type == TaskType::SEGMENTATION) {
+        overlay = image.clone();
+        for (const auto &result : results) {
+            const cv::Scalar color = edgecrafter::processing::get_color_for_class(result.class_id);
+            if (!result.mask.empty() && result.mask.rows == image.rows && result.mask.cols == image.cols) {
+                overlay.setTo(color, result.mask);
+            }
+        }
+        cv::addWeighted(overlay, alpha, image, 1.0 - alpha, 0, image);
+    }
 
     for (const auto &result : results) {
         const cv::Scalar color = edgecrafter::processing::get_color_for_class(result.class_id);
-        if (!result.mask.empty() && result.mask.rows == image.rows && result.mask.cols == image.cols) {
-            overlay.setTo(color, result.mask);
-        }
-
         cv::Point2f p1(result.box[0], result.box[1]);
         cv::Point2f p2(result.box[2], result.box[3]);
         cv::rectangle(image, p1, p2, color, 2);
@@ -250,10 +257,6 @@ void EdgeCrafterInference::draw_results(cv::Mat &image, std::span<const Result> 
             edgecrafter::processing::draw_keypoints(
                 image, result.keypoints, edgecrafter::processing::coco_skeleton_edges(), config_.keypoint_threshold);
         }
-    }
-
-    if (config_.task_type == TaskType::SEGMENTATION) {
-        cv::addWeighted(overlay, alpha, image, 1.0 - alpha, 0, image);
     }
 }
 
