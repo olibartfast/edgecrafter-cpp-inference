@@ -38,6 +38,7 @@ int main(int argc, const char *argv[]) {
             config.task_type = TaskType::SEGMENTATION;
         } else if (std::strcmp(argv[i], "--pose") == 0) {
             config.task_type = TaskType::POSE;
+            config.label_offset = -1;
         } else if (std::strcmp(argv[i], "--threshold") == 0 && i + 1 < argc) {
             config.threshold = std::stof(argv[++i]);
         } else if (std::strcmp(argv[i], "--output") == 0 && i + 1 < argc) {

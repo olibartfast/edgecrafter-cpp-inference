@@ -153,7 +153,7 @@ std::vector<Result> EdgeCrafterInference::infer(std::span<const float> input_dat
         }
 
         Result result;
-        result.class_id = static_cast<int>(labels[i]);
+        result.class_id = static_cast<int>(labels[i]) + config_.label_offset;
         result.score = score;
 
         if (has_boxes) {

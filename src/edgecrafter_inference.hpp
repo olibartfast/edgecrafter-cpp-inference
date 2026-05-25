@@ -25,6 +25,7 @@ struct Config {
     float mask_threshold{0.0F};
     int num_keypoints{17};
     float keypoint_threshold{0.3F};
+    int label_offset{0};
 };
 
 struct Result {
