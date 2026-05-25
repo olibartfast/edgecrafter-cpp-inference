@@ -1,6 +1,7 @@
 # EdgeCrafter C++ Inference
 
-C++/OpenCV inference runner for [EdgeCrafter](https://github.com/Intellindust-AI-Lab/EdgeCrafter) detection and instance segmentation ONNX exports.
+C++/OpenCV inference runner for [EdgeCrafter](https://github.com/Intellindust-AI-Lab/EdgeCrafter) detection, instance
+segmentation, and human pose estimation ONNX exports.
 
 This repo includes the full local flow: fetch EdgeCrafter, download a checkpoint, export ONNX, build the C++ app, and run
 inference.
@@ -17,6 +18,12 @@ For segmentation:
 scripts/run_demo.sh ecseg_s
 ```
 
+For pose estimation:
+
+```bash
+scripts/run_demo.sh ecpose_s
+```
+
 The demo writes results under `outputs/`.
 
 ## Export ONNX
@@ -31,6 +38,12 @@ Export a segmentation checkpoint:
 
 ```bash
 scripts/export_edgecrafter_onnx.sh ecseg_s
+```
+
+Export a pose checkpoint:
+
+```bash
+scripts/export_edgecrafter_onnx.sh ecpose_s
 ```
 
 Supported models: `ecdet_s`, `ecdet_m`, `ecdet_l`, `ecdet_x`, `ecseg_s`, `ecseg_m`, `ecseg_l`, `ecseg_x`,
@@ -80,7 +93,7 @@ Instance segmentation:
 Human pose estimation:
 
 ```bash
-./build/inference_app ./models/ecpose_s.onnx ./data/dog.jpg ./data/coco.names --pose --threshold 0.5
+./build/inference_app ./models/ecpose_s.onnx ./data/person.jpg ./data/coco.names --pose --threshold 0.5
 ```
 
 Optional output path:
@@ -90,7 +103,7 @@ Optional output path:
 ```
 
 The app writes an annotated image and prints each result with class id, score, box, and mask pixel count for
-segmentation.
+segmentation or visible keypoint count for pose estimation.
 
 ## Notes
 
@@ -100,5 +113,8 @@ segmentation.
   C++ side only filters by score and draws results.
 - TensorRT support was intentionally not carried over because EdgeCrafter's deploy graph returns typed outputs,
   including `int64` labels and a second integer input.
-- Pose estimation draws the standard COCO 17-keypoint skeleton. Only keypoints with confidence above the
-  `keypoint_threshold` (default 0.3) are rendered.
+- Pose estimation draws the standard COCO 17-keypoint skeleton. Only keypoints with confidence above
+  `keypoint_threshold` (default 0.3) are rendered. The `--pose` flag also applies a `label_offset` of -1 because the
+  pose model uses binary classification (background=0, person=1) rather than COCO indexing.
+- Detection and segmentation models output `boxes` for every result. The pose model omits `boxes`; the C++ side derives
+  bounding boxes from visible keypoints for drawing labels and rectangles.
