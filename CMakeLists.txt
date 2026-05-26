@@ -1,11 +1,9 @@
 cmake_minimum_required(VERSION 3.12)
 project(edgecrafter_inference CXX)
 
-# Set C++ standard to C++20
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# --- Compiler Warnings (applied to project targets only, not third-party) ---
 set(PROJECT_WARNING_FLAGS
     -Wall
     -Wextra
@@ -24,13 +22,11 @@ set(PROJECT_WARNING_FLAGS
     -Wimplicit-fallthrough
 )
 
-# Treat warnings as errors in CI (opt-in via -DWERROR=ON)
 option(WERROR "Treat compiler warnings as errors" OFF)
 if(WERROR)
     list(APPEND PROJECT_WARNING_FLAGS -Werror)
 endif()
 
-# Enable sanitizers in debug builds (opt-in via -DSANITIZERS=ON)
 option(SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 if(SANITIZERS)
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -38,19 +34,19 @@ if(SANITIZERS)
     message(STATUS "Sanitizers: AddressSanitizer + UndefinedBehaviorSanitizer enabled")
 endif()
 
-# --- Backend Selection Options ---
 option(USE_ONNX_RUNTIME "Build with ONNX Runtime backend support" ON)
-if(NOT USE_ONNX_RUNTIME)
-    message(FATAL_ERROR "EdgeCrafter inference currently requires ONNX Runtime. Set USE_ONNX_RUNTIME=ON")
+option(USE_TENSORRT "Build with TensorRT backend support" OFF)
+if(NOT USE_ONNX_RUNTIME AND NOT USE_TENSORRT)
+    message(FATAL_ERROR "Enable at least one backend with USE_ONNX_RUNTIME=ON or USE_TENSORRT=ON")
 endif()
 
 message(STATUS "Backend configuration:")
 message(STATUS "  ONNX Runtime: ${USE_ONNX_RUNTIME}")
+message(STATUS "  TensorRT: ${USE_TENSORRT}")
 
-# --- ONNX Runtime Configuration ---
 if(USE_ONNX_RUNTIME)
     message(STATUS "Configuring ONNX Runtime backend...")
-    
+
     set(ORT_VERSION "1.21.0")
     set(ORT_ARCHIVE_BASENAME "onnxruntime-linux-x64-${ORT_VERSION}")
     set(ORT_ARCHIVE_NAME "${ORT_ARCHIVE_BASENAME}.tgz")
@@ -111,7 +107,34 @@ if(USE_ONNX_RUNTIME)
     message(STATUS "ONNX Runtime library: ${ONNXRUNTIME_LIBRARY}")
 endif()
 
-# --- Find OpenCV ---
+if(USE_TENSORRT)
+    set(TENSORRT_DIR "" CACHE PATH "Path to TensorRT root directory")
+    find_path(TENSORRT_INCLUDE_DIR NvInfer.h
+        HINTS "${TENSORRT_DIR}" ENV TENSORRT_DIR
+        PATH_SUFFIXES include)
+    find_library(TENSORRT_LIBRARY nvinfer
+        HINTS "${TENSORRT_DIR}" ENV TENSORRT_DIR
+        PATH_SUFFIXES lib lib64)
+    find_path(CUDA_INCLUDE_DIR cuda_runtime_api.h
+        HINTS ENV CUDA_HOME ENV CUDA_PATH /usr/local/cuda
+        PATH_SUFFIXES include)
+    find_library(CUDART_LIBRARY cudart
+        HINTS ENV CUDA_HOME ENV CUDA_PATH /usr/local/cuda
+        PATH_SUFFIXES lib lib64)
+
+    if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_LIBRARY)
+        message(FATAL_ERROR "TensorRT headers or library not found. Set TENSORRT_DIR to your TensorRT installation.")
+    endif()
+    if(NOT CUDA_INCLUDE_DIR OR NOT CUDART_LIBRARY)
+        message(FATAL_ERROR "CUDA headers or cudart library not found. Set CUDA_HOME or CUDA_PATH.")
+    endif()
+
+    message(STATUS "TensorRT include directory: ${TENSORRT_INCLUDE_DIR}")
+    message(STATUS "TensorRT library: ${TENSORRT_LIBRARY}")
+    message(STATUS "CUDA include directory: ${CUDA_INCLUDE_DIR}")
+    message(STATUS "CUDA runtime library: ${CUDART_LIBRARY}")
+endif()
+
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs videoio highgui)
 find_package(Threads REQUIRED)
 if(NOT OpenCV_FOUND)
@@ -120,60 +143,60 @@ endif()
 message(STATUS "OpenCV include directories: ${OpenCV_INCLUDE_DIRS}")
 message(STATUS "OpenCV libraries: ${OpenCV_LIBS}")
 
-# --- Source and Include Directories ---
 set(SOURCE_DIR "${CMAKE_SOURCE_DIR}/src")
-set(TEST_DIR "${CMAKE_SOURCE_DIR}/tests")
 set(DATA_DIR "${CMAKE_SOURCE_DIR}/data")
-
-# Create the data directory if it doesn't exist
 file(MAKE_DIRECTORY "${DATA_DIR}")
 
-# --- Main Library ---
 set(EDGECRAFTER_SOURCES
     "${SOURCE_DIR}/edgecrafter_inference.cpp"
     "${SOURCE_DIR}/processing_utils.cpp"
     "${SOURCE_DIR}/backends/inference_backend.cpp"
 )
 
-# Add backend-specific sources
-list(APPEND EDGECRAFTER_SOURCES "${SOURCE_DIR}/backends/onnx_runtime_backend.cpp")
+if(USE_ONNX_RUNTIME)
+    list(APPEND EDGECRAFTER_SOURCES "${SOURCE_DIR}/backends/onnx_runtime_backend.cpp")
+endif()
+if(USE_TENSORRT)
+    list(APPEND EDGECRAFTER_SOURCES "${SOURCE_DIR}/backends/tensorrt_backend.cpp")
+endif()
 
 add_library(edgecrafter_inference_lib STATIC ${EDGECRAFTER_SOURCES})
 target_compile_options(edgecrafter_inference_lib PRIVATE ${PROJECT_WARNING_FLAGS})
 
-target_include_directories(edgecrafter_inference_lib
-    PUBLIC
-        "${SOURCE_DIR}"
-)
+target_include_directories(edgecrafter_inference_lib PUBLIC "${SOURCE_DIR}")
+target_include_directories(edgecrafter_inference_lib SYSTEM PUBLIC "${OpenCV_INCLUDE_DIRS}")
 
-# Third-party includes as SYSTEM to suppress warnings from their headers
-target_include_directories(edgecrafter_inference_lib SYSTEM
-    PUBLIC
-        "${OpenCV_INCLUDE_DIRS}"
-)
+if(USE_ONNX_RUNTIME)
+    target_include_directories(edgecrafter_inference_lib SYSTEM PUBLIC "${ONNXRUNTIME_INCLUDE_DIR}")
+    target_compile_definitions(edgecrafter_inference_lib PUBLIC USE_ONNX_RUNTIME)
+endif()
+if(USE_TENSORRT)
+    target_include_directories(edgecrafter_inference_lib SYSTEM PUBLIC "${TENSORRT_INCLUDE_DIR}" "${CUDA_INCLUDE_DIR}")
+    target_compile_definitions(edgecrafter_inference_lib PUBLIC USE_TENSORRT)
+endif()
 
-# Add backend-specific includes and compile definitions
-target_include_directories(edgecrafter_inference_lib SYSTEM PUBLIC "${ONNXRUNTIME_INCLUDE_DIR}")
-target_compile_definitions(edgecrafter_inference_lib PUBLIC USE_ONNX_RUNTIME)
-
-# Link libraries
 target_link_libraries(edgecrafter_inference_lib
     PUBLIC
         "${OpenCV_LIBS}"
         Threads::Threads
 )
 
-target_link_libraries(edgecrafter_inference_lib PUBLIC "${ONNXRUNTIME_LIBRARY}")
+if(USE_ONNX_RUNTIME)
+    target_link_libraries(edgecrafter_inference_lib PUBLIC "${ONNXRUNTIME_LIBRARY}")
+endif()
+if(USE_TENSORRT)
+    target_link_libraries(edgecrafter_inference_lib PUBLIC "${TENSORRT_LIBRARY}" "${CUDART_LIBRARY}")
+endif()
 
-# --- Main Application ---
 add_executable(inference_app "${SOURCE_DIR}/main.cpp")
 target_compile_options(inference_app PRIVATE ${PROJECT_WARNING_FLAGS})
 target_link_libraries(inference_app PRIVATE edgecrafter_inference_lib)
 
-# Copy backend shared libraries to the executable directory
-add_custom_command(TARGET inference_app POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${ONNXRUNTIME_LIBRARY}"
-            $<TARGET_FILE_DIR:inference_app>
-    COMMENT "Copying ONNX Runtime library to output directory"
-)
+if(USE_ONNX_RUNTIME)
+    add_custom_command(TARGET inference_app POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${ONNXRUNTIME_LIBRARY}"
+                $<TARGET_FILE_DIR:inference_app>
+        COMMENT "Copying ONNX Runtime library to output directory"
+    )
+endif()

@@ -3,6 +3,7 @@
 #include "processing_utils.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <numeric>
@@ -11,9 +12,33 @@
 
 namespace {
 
+using edgecrafter::backend::Tensor;
+using edgecrafter::backend::TensorDataType;
+
 size_t tensor_size(const std::vector<int64_t> &shape) {
     return std::accumulate(shape.begin(), shape.end(), size_t{1},
                            [](size_t acc, int64_t dim) { return acc * static_cast<size_t>(dim); });
+}
+
+template <typename T> std::vector<uint8_t> bytes_from_span(std::span<const T> values) {
+    std::vector<uint8_t> bytes(values.size_bytes());
+    std::memcpy(bytes.data(), values.data(), bytes.size());
+    return bytes;
+}
+
+template <typename T> std::vector<T> tensor_values_as(const Tensor &tensor, TensorDataType expected_dtype) {
+    if (tensor.dtype != expected_dtype) {
+        throw std::runtime_error("Tensor '" + tensor.name + "' has dtype " +
+                                 edgecrafter::backend::tensor_dtype_name(tensor.dtype) + ", expected " +
+                                 edgecrafter::backend::tensor_dtype_name(expected_dtype));
+    }
+    if (tensor.bytes.size() != tensor_size(tensor.shape) * sizeof(T)) {
+        throw std::runtime_error("Tensor byte size mismatch for output: " + tensor.name);
+    }
+
+    std::vector<T> values(tensor.bytes.size() / sizeof(T));
+    std::memcpy(values.data(), tensor.bytes.data(), tensor.bytes.size());
+    return values;
 }
 
 } // namespace
@@ -76,53 +101,59 @@ std::vector<float> EdgeCrafterInference::preprocess_image(const cv::Mat &bgr_ima
 
 std::vector<Result> EdgeCrafterInference::infer(std::span<const float> input_data, int orig_h, int orig_w) {
     std::array<int64_t, 2> orig_target_size{static_cast<int64_t>(orig_w), static_cast<int64_t>(orig_h)};
-    backend_->run_inference(input_data, input_shape_, orig_target_size);
+    std::vector<Tensor> inputs;
+    inputs.push_back(Tensor{"images", TensorDataType::Float32, input_shape_, bytes_from_span(input_data)});
+    inputs.push_back(
+        Tensor{"orig_target_sizes", TensorDataType::Int64, {1, 2}, bytes_from_span<int64_t>(orig_target_size)});
 
-    const size_t labels_idx = output_index_or_throw("labels");
-    const size_t scores_idx = output_index_or_throw("scores");
+    backend_->run_inference(inputs);
+    const auto &outputs = backend_->get_outputs();
 
-    const auto labels_shape = backend_->get_output_shape(labels_idx);
-    const auto scores_shape = backend_->get_output_shape(scores_idx);
+    const size_t labels_idx = output_index_or_throw(outputs, "labels");
+    const size_t scores_idx = output_index_or_throw(outputs, "scores");
+
+    const auto &labels_tensor = outputs[labels_idx];
+    const auto &scores_tensor = outputs[scores_idx];
+    const auto &labels_shape = labels_tensor.shape;
+    const auto &scores_shape = scores_tensor.shape;
     if (labels_shape.size() != 2 || scores_shape != labels_shape) {
         throw std::runtime_error("Unexpected EdgeCrafter output shapes");
     }
 
-    std::vector<int64_t> labels(tensor_size(labels_shape));
-    std::vector<float> scores(tensor_size(scores_shape));
-    backend_->get_int64_output_data(labels_idx, labels.data(), labels.size());
-    backend_->get_float_output_data(scores_idx, scores.data(), scores.size());
+    std::vector<int64_t> labels = tensor_values_as<int64_t>(labels_tensor, TensorDataType::Int64);
+    std::vector<float> scores = tensor_values_as<float>(scores_tensor, TensorDataType::Float32);
 
     std::vector<float> boxes;
     std::vector<int64_t> boxes_shape;
     bool has_boxes = false;
     size_t boxes_idx = 0;
-    for (size_t i = 0; i < backend_->get_output_count(); ++i) {
-        if (backend_->get_output_name(i) == "boxes") {
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        if (outputs[i].name == "boxes") {
             boxes_idx = i;
             has_boxes = true;
             break;
         }
     }
     if (has_boxes) {
-        boxes_shape = backend_->get_output_shape(boxes_idx);
+        const auto &boxes_tensor = outputs[boxes_idx];
+        boxes_shape = boxes_tensor.shape;
         if (boxes_shape.size() != 3 || boxes_shape[2] != 4 || boxes_shape[1] != labels_shape[1]) {
             throw std::runtime_error("Unexpected EdgeCrafter boxes output shape");
         }
-        boxes.resize(tensor_size(boxes_shape));
-        backend_->get_float_output_data(boxes_idx, boxes.data(), boxes.size());
+        boxes = tensor_values_as<float>(boxes_tensor, TensorDataType::Float32);
     }
 
     std::vector<float> masks;
     std::vector<int64_t> masks_shape;
     bool has_masks = false;
     if (config_.task_type == TaskType::SEGMENTATION) {
-        const size_t masks_idx = output_index_or_throw("masks");
-        masks_shape = backend_->get_output_shape(masks_idx);
+        const size_t masks_idx = output_index_or_throw(outputs, "masks");
+        const auto &masks_tensor = outputs[masks_idx];
+        masks_shape = masks_tensor.shape;
         if (masks_shape.size() != 4 || masks_shape[1] != labels_shape[1]) {
             throw std::runtime_error("Unexpected EdgeCrafter masks output shape");
         }
-        masks.resize(tensor_size(masks_shape));
-        backend_->get_float_output_data(masks_idx, masks.data(), masks.size());
+        masks = tensor_values_as<float>(masks_tensor, TensorDataType::Float32);
         has_masks = true;
     }
 
@@ -130,14 +161,14 @@ std::vector<Result> EdgeCrafterInference::infer(std::span<const float> input_dat
     std::vector<int64_t> keypoints_shape;
     bool has_keypoints = false;
     if (config_.task_type == TaskType::POSE) {
-        const size_t keypoints_idx = output_index_or_throw("keypoints");
-        keypoints_shape = backend_->get_output_shape(keypoints_idx);
+        const size_t keypoints_idx = output_index_or_throw(outputs, "keypoints");
+        const auto &keypoints_tensor = outputs[keypoints_idx];
+        keypoints_shape = keypoints_tensor.shape;
         const auto kpt_dim = keypoints_shape.size() == 4 ? keypoints_shape[3] : 0;
         if (keypoints_shape.size() != 4 || keypoints_shape[1] != labels_shape[1] || (kpt_dim != 2 && kpt_dim != 3)) {
             throw std::runtime_error("Unexpected EdgeCrafter keypoints output shape");
         }
-        keypoints.resize(tensor_size(keypoints_shape));
-        backend_->get_float_output_data(keypoints_idx, keypoints.data(), keypoints.size());
+        keypoints = tensor_values_as<float>(keypoints_tensor, TensorDataType::Float32);
         has_keypoints = true;
     }
 
@@ -207,9 +238,9 @@ std::vector<Result> EdgeCrafterInference::infer(std::span<const float> input_dat
     return results;
 }
 
-size_t EdgeCrafterInference::output_index_or_throw(std::string_view name) const {
-    for (size_t i = 0; i < backend_->get_output_count(); ++i) {
-        if (backend_->get_output_name(i) == name) {
+size_t EdgeCrafterInference::output_index_or_throw(std::span<const Tensor> outputs, std::string_view name) {
+    for (size_t i = 0; i < outputs.size(); ++i) {
+        if (outputs[i].name == name) {
             return i;
         }
     }

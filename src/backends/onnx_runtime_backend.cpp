@@ -5,16 +5,69 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
-#include <numeric>
 #include <stdexcept>
 
 namespace edgecrafter::backend {
 
 namespace {
 
-size_t tensor_size(const std::vector<int64_t> &shape) {
-    return std::accumulate(shape.begin(), shape.end(), size_t{1},
-                           [](size_t acc, int64_t dim) { return acc * static_cast<size_t>(dim); });
+TensorDataType from_onnx_type(ONNXTensorElementDataType type) {
+    switch (type) {
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
+        return TensorDataType::Float32;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
+        return TensorDataType::Int8;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+        return TensorDataType::Int32;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+        return TensorDataType::Int64;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
+        return TensorDataType::UInt8;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:
+        return TensorDataType::Bool;
+    case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16:
+        return TensorDataType::Float16;
+    default:
+        throw std::runtime_error("Unsupported ONNX tensor element type: " + std::to_string(type));
+    }
+}
+
+ONNXTensorElementDataType to_onnx_type(TensorDataType dtype) {
+    switch (dtype) {
+    case TensorDataType::Float16:
+        return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
+    case TensorDataType::Float32:
+        return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+    case TensorDataType::Int8:
+        return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8;
+    case TensorDataType::Int32:
+        return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32;
+    case TensorDataType::Int64:
+        return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64;
+    case TensorDataType::UInt8:
+        return ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8;
+    case TensorDataType::Bool:
+        return ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL;
+    }
+    throw std::runtime_error("Unsupported tensor data type");
+}
+
+void validate_input_tensor(const Tensor &expected, const Tensor &actual) {
+    if (actual.name != expected.name) {
+        throw std::runtime_error("Input tensor name mismatch. Expected " + expected.name + ", got " + actual.name);
+    }
+    if (actual.dtype != expected.dtype) {
+        throw std::runtime_error("Input tensor dtype mismatch for " + actual.name + ". Expected " +
+                                 tensor_dtype_name(expected.dtype) + ", got " + tensor_dtype_name(actual.dtype));
+    }
+    if (actual.shape != expected.shape) {
+        throw std::runtime_error("Input tensor shape mismatch for " + actual.name);
+    }
+    const size_t expected_bytes = tensor_byte_size(expected.dtype, expected.shape);
+    if (actual.bytes.size() != expected_bytes) {
+        throw std::runtime_error("Input tensor size mismatch for " + actual.name + ". Expected " +
+                                 std::to_string(expected_bytes) + " bytes, got " + std::to_string(actual.bytes.size()));
+    }
 }
 
 } // namespace
@@ -39,24 +92,40 @@ std::vector<int64_t> OnnxRuntimeBackend::initialize(const std::filesystem::path 
         throw std::runtime_error("EdgeCrafter ONNX export must have inputs: images and orig_target_sizes");
     }
 
+    std::vector<int64_t> detected_shape = input_shape;
+    input_metadata_.clear();
+    input_name_strings_.clear();
+    input_names_.clear();
+    input_metadata_.reserve(input_count);
     input_name_strings_.reserve(input_count);
+
     for (size_t i = 0; i < input_count; ++i) {
         Ort::AllocatedStringPtr name_ptr = session_->GetInputNameAllocated(i, allocator_);
         input_name_strings_.emplace_back(name_ptr.get());
+
+        Ort::TypeInfo type_info = session_->GetInputTypeInfo(i);
+        auto tensor_info = type_info.GetTensorTypeAndShapeInfo();
+        Tensor tensor{
+            input_name_strings_.back(), from_onnx_type(tensor_info.GetElementType()), tensor_info.GetShape(), {}};
+        if (i == 0 && tensor.shape.size() == input_shape.size()) {
+            if ((input_shape[2] == 0 || input_shape[3] == 0) && tensor.shape[2] > 0 && tensor.shape[3] > 0) {
+                detected_shape = tensor.shape;
+                detected_shape[0] = 1;
+                std::cout << "[ONNX Runtime] Auto-detected input size: " << tensor.shape[2] << "x" << tensor.shape[3]
+                          << std::endl;
+            }
+            tensor.shape = detected_shape;
+        } else if (i == 1 && tensor.shape.size() == 2) {
+            tensor.shape = {1, 2};
+        }
+        input_metadata_.push_back(std::move(tensor));
     }
     std::transform(input_name_strings_.begin(), input_name_strings_.end(), std::back_inserter(input_names_),
                    [](const std::string &name) { return name.c_str(); });
 
-    std::vector<int64_t> detected_shape = input_shape;
-    Ort::TypeInfo input_type_info = session_->GetInputTypeInfo(0);
-    auto shape = input_type_info.GetTensorTypeAndShapeInfo().GetShape();
-    if ((input_shape[2] == 0 || input_shape[3] == 0) && shape.size() == 4 && shape[2] > 0 && shape[3] > 0) {
-        detected_shape = shape;
-        detected_shape[0] = 1;
-        std::cout << "[ONNX Runtime] Auto-detected input size: " << shape[2] << "x" << shape[3] << std::endl;
-    }
-
     const size_t output_count = session_->GetOutputCount();
+    output_name_strings_.clear();
+    output_names_.clear();
     output_name_strings_.reserve(output_count);
     for (size_t i = 0; i < output_count; ++i) {
         Ort::AllocatedStringPtr name_ptr = session_->GetOutputNameAllocated(i, allocator_);
@@ -66,8 +135,8 @@ std::vector<int64_t> OnnxRuntimeBackend::initialize(const std::filesystem::path 
                    [](const std::string &name) { return name.c_str(); });
 
     std::cout << "[ONNX Runtime] Inputs:";
-    for (const auto &name : input_name_strings_) {
-        std::cout << " " << name;
+    for (const auto &tensor : input_metadata_) {
+        std::cout << " " << tensor.name << ":" << tensor_dtype_name(tensor.dtype);
     }
     std::cout << "\n[ONNX Runtime] Outputs:";
     for (const auto &name : output_name_strings_) {
@@ -78,65 +147,42 @@ std::vector<int64_t> OnnxRuntimeBackend::initialize(const std::filesystem::path 
     return detected_shape;
 }
 
-void OnnxRuntimeBackend::run_inference(std::span<const float> image_data, const std::vector<int64_t> &image_shape,
-                                       std::span<const int64_t, 2> orig_target_size) {
+void OnnxRuntimeBackend::run_inference(const std::vector<Tensor> &inputs) {
     if (!session_) {
         throw std::runtime_error("Backend has not been initialized");
     }
-
-    std::array<int64_t, 2> size_shape{1, 2};
-    Ort::Value image_tensor =
-        Ort::Value::CreateTensor<float>(memory_info_, const_cast<float *>(image_data.data()), image_data.size(),
-                                        image_shape.data(), image_shape.size());
-    Ort::Value size_tensor =
-        Ort::Value::CreateTensor<int64_t>(memory_info_, const_cast<int64_t *>(orig_target_size.data()),
-                                          orig_target_size.size(), size_shape.data(), size_shape.size());
-
-    std::array<Ort::Value, 2> input_tensors{std::move(image_tensor), std::move(size_tensor)};
-    output_tensors_ = session_->Run(Ort::RunOptions{nullptr}, input_names_.data(), input_tensors.data(),
-                                    input_tensors.size(), output_names_.data(), output_names_.size());
-}
-
-size_t OnnxRuntimeBackend::get_output_count() const { return output_name_strings_.size(); }
-
-std::string OnnxRuntimeBackend::get_output_name(size_t output_index) const {
-    if (output_index >= output_name_strings_.size()) {
-        throw std::out_of_range("Output index out of range");
+    if (inputs.size() != input_metadata_.size()) {
+        throw std::runtime_error("Input tensor count mismatch. Expected " + std::to_string(input_metadata_.size()) +
+                                 ", got " + std::to_string(inputs.size()));
     }
-    return output_name_strings_[output_index];
-}
 
-std::vector<int64_t> OnnxRuntimeBackend::get_output_shape(size_t output_index) const {
-    if (output_index >= output_tensors_.size()) {
-        throw std::out_of_range("Output index out of range");
+    std::vector<Ort::Value> ort_inputs;
+    ort_inputs.reserve(inputs.size());
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        validate_input_tensor(input_metadata_[i], inputs[i]);
+        const auto &input = inputs[i];
+        uint8_t *data = const_cast<uint8_t *>(input.bytes.data());
+        const size_t byte_count = input.bytes.size();
+        const auto onnx_type = to_onnx_type(input.dtype);
+        ort_inputs.emplace_back(Ort::Value::CreateTensor(memory_info_, data, byte_count, input.shape.data(),
+                                                         input.shape.size(), onnx_type));
     }
-    return output_tensors_[output_index].GetTensorTypeAndShapeInfo().GetShape();
-}
 
-void OnnxRuntimeBackend::get_float_output_data(size_t output_index, float *data, size_t size) const {
-    if (output_index >= output_tensors_.size()) {
-        throw std::out_of_range("Output index out of range");
-    }
-    auto shape = get_output_shape(output_index);
-    const size_t actual_size = tensor_size(shape);
-    if (actual_size != size) {
-        throw std::runtime_error("Output tensor size mismatch");
-    }
-    const float *tensor_data = output_tensors_[output_index].GetTensorData<float>();
-    std::copy(tensor_data, tensor_data + size, data);
-}
+    std::vector<Ort::Value> ort_outputs =
+        session_->Run(Ort::RunOptions{nullptr}, input_names_.data(), ort_inputs.data(), ort_inputs.size(),
+                      output_names_.data(), output_names_.size());
 
-void OnnxRuntimeBackend::get_int64_output_data(size_t output_index, int64_t *data, size_t size) const {
-    if (output_index >= output_tensors_.size()) {
-        throw std::out_of_range("Output index out of range");
+    outputs_.clear();
+    outputs_.reserve(ort_outputs.size());
+    for (size_t i = 0; i < ort_outputs.size(); ++i) {
+        auto tensor_info = ort_outputs[i].GetTensorTypeAndShapeInfo();
+        Tensor output{
+            output_name_strings_[i], from_onnx_type(tensor_info.GetElementType()), tensor_info.GetShape(), {}};
+        output.bytes.resize(tensor_byte_size(output.dtype, output.shape));
+        const void *data = ort_outputs[i].GetTensorRawData();
+        std::memcpy(output.bytes.data(), data, output.bytes.size());
+        outputs_.push_back(std::move(output));
     }
-    auto shape = get_output_shape(output_index);
-    const size_t actual_size = tensor_size(shape);
-    if (actual_size != size) {
-        throw std::runtime_error("Output tensor size mismatch");
-    }
-    const int64_t *tensor_data = output_tensors_[output_index].GetTensorData<int64_t>();
-    std::copy(tensor_data, tensor_data + size, data);
 }
 
 } // namespace edgecrafter::backend
