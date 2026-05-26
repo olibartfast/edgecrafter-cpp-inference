@@ -68,6 +68,7 @@ Requirements:
 - C++20 compiler
 - OpenCV development package
 - Network access on first configure, unless ONNX Runtime is already present in the build directory
+- Optional for TensorRT: CUDA toolkit/runtime plus a TensorRT installation
 
 ```bash
 cmake -S . -B build -DUSE_ONNX_RUNTIME=ON
@@ -75,6 +76,31 @@ cmake --build build -j
 ```
 
 The build downloads ONNX Runtime 1.21.0 into `build/_deps` when needed.
+
+Build with TensorRT instead of ONNX Runtime:
+
+```bash
+cmake -S . -B build-trt -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DUSE_ONNX_RUNTIME=OFF \
+  -DUSE_TENSORRT=ON \
+  -DTENSORRT_DIR=/path/to/TensorRT
+cmake --build build-trt -j
+```
+
+The TensorRT backend expects a serialized TensorRT engine file. Create one from an exported EdgeCrafter ONNX model with
+`trtexec`, using fixed shapes for EdgeCrafter's two inputs:
+
+```bash
+LD_LIBRARY_PATH=/path/to/TensorRT/lib:${LD_LIBRARY_PATH} \
+  /path/to/TensorRT/bin/trtexec \
+  --onnx=models/ecdet_s.onnx \
+  --saveEngine=models/ecdet_s.trt.engine \
+  --minShapes=images:1x3x640x640,orig_target_sizes:1x2 \
+  --optShapes=images:1x3x640x640,orig_target_sizes:1x2 \
+  --maxShapes=images:1x3x640x640,orig_target_sizes:1x2 \
+  --skipInference
+```
 
 ## Run C++
 
@@ -102,6 +128,13 @@ Optional output path:
 ./build/inference_app ./ecdet_l.onnx ./image.jpg ./data/coco.names --output result.jpg
 ```
 
+TensorRT detection:
+
+```bash
+LD_LIBRARY_PATH=/path/to/TensorRT/lib:${LD_LIBRARY_PATH} \
+  ./build-trt/inference_app ./models/ecdet_s.trt.engine ./data/dog.jpg ./data/coco.names --threshold 0.5
+```
+
 The app writes an annotated image and prints each result with class id, score, box, and mask pixel count for
 segmentation or visible keypoint count for pose estimation.
 
@@ -111,8 +144,8 @@ segmentation or visible keypoint count for pose estimation.
   `[0,1]`, then ImageNet mean/std normalization.
 - EdgeCrafter's exported ONNX graph already performs top-k selection and box scaling through `orig_target_sizes`, so the
   C++ side only filters by score and draws results.
-- TensorRT support was intentionally not carried over because EdgeCrafter's deploy graph returns typed outputs,
-  including `int64` labels and a second integer input.
+- TensorRT support requires TensorRT 10-style named tensor APIs and an engine whose input/output names match the
+  EdgeCrafter deploy contract. The runtime handles EdgeCrafter's `int64` `orig_target_sizes` input and `labels` output.
 - Pose estimation draws the standard COCO 17-keypoint skeleton. Only keypoints with confidence above
   `keypoint_threshold` (default 0.3) are rendered. The `--pose` flag also applies a `label_offset` of -1 because the
   pose model uses binary classification (background=0, person=1) rather than COCO indexing.

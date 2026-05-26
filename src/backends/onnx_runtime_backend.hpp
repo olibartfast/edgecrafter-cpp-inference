@@ -17,15 +17,9 @@ class OnnxRuntimeBackend : public InferenceBackend {
     std::vector<int64_t> initialize(const std::filesystem::path &model_path,
                                     const std::vector<int64_t> &input_shape) override;
 
-    void run_inference(std::span<const float> image_data, const std::vector<int64_t> &image_shape,
-                       std::span<const int64_t, 2> orig_target_size) override;
+    void run_inference(const std::vector<Tensor> &inputs) override;
 
-    [[nodiscard]] size_t get_output_count() const override;
-    [[nodiscard]] std::string get_output_name(size_t output_index) const override;
-    [[nodiscard]] std::vector<int64_t> get_output_shape(size_t output_index) const override;
-
-    void get_float_output_data(size_t output_index, float *data, size_t size) const override;
-    void get_int64_output_data(size_t output_index, int64_t *data, size_t size) const override;
+    [[nodiscard]] const std::vector<Tensor> &get_outputs() const override { return outputs_; }
 
     [[nodiscard]] std::string get_backend_name() const override { return "ONNX Runtime"; }
 
@@ -35,11 +29,12 @@ class OnnxRuntimeBackend : public InferenceBackend {
     Ort::AllocatorWithDefaultOptions allocator_;
     Ort::MemoryInfo memory_info_;
 
+    std::vector<Tensor> input_metadata_;
     std::vector<std::string> input_name_strings_;
     std::vector<const char *> input_names_;
     std::vector<std::string> output_name_strings_;
     std::vector<const char *> output_names_;
-    std::vector<Ort::Value> output_tensors_;
+    std::vector<Tensor> outputs_;
 };
 
 } // namespace edgecrafter::backend

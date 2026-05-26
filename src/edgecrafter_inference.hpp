@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using edgecrafter::backend::create_backend;
@@ -59,7 +60,8 @@ class EdgeCrafterInference {
 
   private:
     void load_labels(const std::filesystem::path &label_file_path);
-    [[nodiscard]] size_t output_index_or_throw(std::string_view name) const;
+    [[nodiscard]] static size_t output_index_or_throw(std::span<const edgecrafter::backend::Tensor> outputs,
+                                                      std::string_view name);
     [[nodiscard]] std::string label_for(int class_id) const;
 
     std::unique_ptr<InferenceBackend> backend_;

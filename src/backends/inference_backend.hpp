@@ -3,11 +3,24 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <span>
 #include <string>
 #include <vector>
 
 namespace edgecrafter::backend {
+
+enum class TensorDataType { Float16, Float32, Int8, Int32, Int64, UInt8, Bool };
+
+struct Tensor {
+    std::string name;
+    TensorDataType dtype{};
+    std::vector<int64_t> shape;
+    std::vector<uint8_t> bytes;
+};
+
+[[nodiscard]] size_t tensor_element_size(TensorDataType dtype);
+[[nodiscard]] size_t tensor_element_count(const std::vector<int64_t> &shape);
+[[nodiscard]] size_t tensor_byte_size(TensorDataType dtype, const std::vector<int64_t> &shape);
+[[nodiscard]] const char *tensor_dtype_name(TensorDataType dtype) noexcept;
 
 class InferenceBackend {
   public:
@@ -21,15 +34,9 @@ class InferenceBackend {
     virtual std::vector<int64_t> initialize(const std::filesystem::path &model_path,
                                             const std::vector<int64_t> &input_shape) = 0;
 
-    virtual void run_inference(std::span<const float> image_data, const std::vector<int64_t> &image_shape,
-                               std::span<const int64_t, 2> orig_target_size) = 0;
+    virtual void run_inference(const std::vector<Tensor> &inputs) = 0;
 
-    [[nodiscard]] virtual size_t get_output_count() const = 0;
-    [[nodiscard]] virtual std::string get_output_name(size_t output_index) const = 0;
-    [[nodiscard]] virtual std::vector<int64_t> get_output_shape(size_t output_index) const = 0;
-
-    virtual void get_float_output_data(size_t output_index, float *data, size_t size) const = 0;
-    virtual void get_int64_output_data(size_t output_index, int64_t *data, size_t size) const = 0;
+    [[nodiscard]] virtual const std::vector<Tensor> &get_outputs() const = 0;
 
     [[nodiscard]] virtual std::string get_backend_name() const = 0;
 };
