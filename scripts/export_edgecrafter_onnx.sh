@@ -9,7 +9,7 @@ Usage:
 Models:
   ecdet_s  ecdet_m  ecdet_l  ecdet_x
   ecseg_s  ecseg_m  ecseg_l  ecseg_x
-  ecpose_s  ecpose_m
+  ecpose_s  ecpose_m  ecpose_l  ecpose_x
 
 Environment overrides:
   EDGECRAFTER_DIR   EdgeCrafter checkout directory (default: third_party/EdgeCrafter)
@@ -30,7 +30,7 @@ case "${model}" in
     task_dir="ecdetseg"
     config="configs/ecseg/${model}.yml"
     ;;
-  ecpose_s|ecpose_m)
+  ecpose_s|ecpose_m|ecpose_l|ecpose_x)
     task_dir="ecpose"
     config="configs/ecpose/${model}_coco.yml"
     ;;

@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Build
-- Only ONNX Runtime is supported (TensorRT was removed).
+- ONNX Runtime is the default backend. TensorRT is also supported when built with `-DUSE_ONNX_RUNTIME=OFF -DUSE_TENSORRT=ON -DTENSORRT_DIR=/path/to/TensorRT`.
 - CMake auto-downloads ONNX Runtime 1.21.0 into `build/_deps` on first configure.
 - `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel`
 
@@ -18,7 +18,7 @@
 
 ## Architecture
 - Entry point: `src/main.cpp` → `EdgeCrafterInference` in `src/edgecrafter_inference.{hpp,cpp}`
-- Backend interface: `src/backends/inference_backend.hpp`, implemented by `onnx_runtime_backend.{hpp,cpp}`
+- Backend interface: `src/backends/inference_backend.hpp`, implemented by `onnx_runtime_backend.{hpp,cpp}` and `tensorrt_backend.{hpp,cpp}`
 - Processing utilities: `src/processing_utils.{hpp,cpp}` (preprocessing, color generation, keypoint drawing)
 
 ## Usage
