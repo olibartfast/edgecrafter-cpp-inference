@@ -153,6 +153,13 @@ TensorRT backend uses TensorRT 10-style named tensor APIs. Engine input and outp
 - Detection and pose annotations draw at full opacity.
 - Per-class colors come from `get_color_for_class()` in `src/processing_utils.cpp`.
 
+## Quality Checks
+
+```bash
+find src -name "*.cpp" -o -name "*.hpp" | xargs clang-format-18 --dry-run --Werror
+cppcheck --enable=all --std=c++20 --suppress=missingIncludeSystem --suppress=unmatchedSuppression --error-exitcode=1 -I src src/
+```
+
 ## Acknowledgements
 
 This project depends on upstream [EdgeCrafter](https://github.com/Intellindust-AI-Lab/EdgeCrafter) for model definitions, training code, checkpoints, and ONNX export tooling. EdgeCrafter builds on RT-DETR, D-FINE, DEIM, lightly-train, DETRPose, RF-DETR, and DINOv3.
@@ -168,11 +175,4 @@ If you use this deployment wrapper or upstream EdgeCrafter models in research, c
   journal={arXiv},
   year={2026}
 }
-```
-
-## Quality Checks
-
-```bash
-find src -name "*.cpp" -o -name "*.hpp" | xargs clang-format-18 --dry-run --Werror
-cppcheck --enable=all --std=c++20 --suppress=missingIncludeSystem --suppress=unmatchedSuppression --error-exitcode=1 -I src src/
 ```
